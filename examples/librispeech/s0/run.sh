@@ -7,12 +7,12 @@
 # Use this to control how many gpu you use, It's 1-gpu training if you specify
 # just 1gpu, otherwise it's is multiple gpu training based on DDP in pytorch
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
-stage=0 # start from 0 if you need to start from data preparation
-stop_stage=5
+stage=6 # start from 0 if you need to start from data preparation
+stop_stage=6
 # data
 data_url=www.openslr.org/resources/12
 # use your own data path
-datadir=/export/data/en-asr-data/OpenSLR
+datadir=datadir
 # wav data dir
 wave_data=data
 # Optional train_config
@@ -22,10 +22,10 @@ checkpoint=
 cmvn=true
 do_delta=false
 
-dir=exp/sp_spec_aug
+dir=../../../../20210610_conformer_exp/
 
 # use average_checkpoint will get better result
-average_checkpoint=true
+average_checkpoint=false
 decode_checkpoint=$dir/final.pt
 # maybe you can try to adjust it if you can not get close results as README.md
 average_num=10
@@ -158,7 +158,29 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
   wait
 fi
 
+#In this optional step, we make a temperature scaling: the model's temperature is tuned on the development set
 if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
+  gpu_id=$(echo $CUDA_VISIBLE_DEVICES | cut -d',' -f1)
+  python wenet/bin/train.py --temperature_scaling \
+      --gpu $gpu_id \
+      --config $temperature_config \
+      --data_type raw \
+      --symbol_table $dict \
+      --bpe_model ${bpemodel}.model \
+      --train_data $wave_data/$dev_set/data.list \
+      --cv_data $wave_data/$dev_set/data.list \
+      ${checkpoint:+--checkpoint $checkpoint} \
+      --model_dir $dir \
+      --ddp.init_method $init_method \
+      --ddp.world_size $num_gpus \
+      --ddp.rank $i \
+      --ddp.dist_backend $dist_backend \
+      --num_workers 1 \
+      $cmvn_opts \
+      --pin_memory
+fi
+
+if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
   # Test model, please specify the model you want to test by --checkpoint
   cmvn_opts=
   $cmvn && cmvn_opts="--cmvn data/${train_set}/global_cmvn"
@@ -175,7 +197,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
   fi
   # Specify decoding_chunk_size if it's a unified dynamic chunk trained model
   # -1 for full chunk
-  decoding_chunk_size=
+  decoding_chunk_size=-1
   ctc_weight=0.5
   # Polling GPU id begin with index 0
   num_gpus=$(echo $CUDA_VISIBLE_DEVICES | awk -F "," '{print NF}')
@@ -223,7 +245,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
 
 fi
 
-if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
+if [ ${stage} -le 7 ] && [ ${stop_stage} -ge 7 ]; then
   # Export the best model you want
   python wenet/bin/export_jit.py \
     --config $dir/train.yaml \
@@ -232,7 +254,7 @@ if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
 fi
 
 # Optionally, you can add LM and test it with runtime.
-if [ ${stage} -le 7 ] && [ ${stop_stage} -ge 7 ]; then
+if [ ${stage} -le 8 ] && [ ${stop_stage} -ge 8 ]; then
   lm=data/local/lm
   lexicon=data/local/dict/lexicon.txt
   mkdir -p $lm
