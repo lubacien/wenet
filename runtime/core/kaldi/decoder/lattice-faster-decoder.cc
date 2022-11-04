@@ -4,6 +4,7 @@
 //           2013-2018  Johns Hopkins University (Author: Daniel Povey)
 //                2014  Guoguo Chen
 //                2018  Zhehuai Chen
+//                2021  Binbin Zhang, Zhendong Peng
 
 // See ../../COPYING for clarification regarding multiple authors
 //
@@ -172,11 +173,12 @@ bool LatticeFasterDecoderTpl<FST, Token>::GetRawLattice(
           cost_offset = cost_offsets_[f];
         }
 
+        StateId state = cur_state;
         if (l->is_start_boundary) {
           StateId tmp = ofst->AddState();
           Arc arc(0, context_graph_->start_tag_id(), Weight(0, 0), tmp);
-          ofst->AddArc(cur_state, arc);
-          cur_state = tmp;
+          ofst->AddArc(state, arc);
+          state = tmp;
         }
         if (l->is_end_boundary) {
           StateId tmp = ofst->AddState();
@@ -188,7 +190,7 @@ bool LatticeFasterDecoderTpl<FST, Token>::GetRawLattice(
         Arc arc(l->ilabel, l->olabel,
                 Weight(l->graph_cost, l->acoustic_cost - cost_offset),
                 nextstate);
-        ofst->AddArc(cur_state, arc);
+        ofst->AddArc(state, arc);
       }
       if (f == num_frames) {
         if (use_final_probs && !final_costs.empty()) {
@@ -790,6 +792,9 @@ BaseFloat LatticeFasterDecoderTpl<FST, Token>::ProcessEmitting(
         BaseFloat new_weight = arc.weight.Value() + cost_offset -
                                decodable->LogLikelihood(frame, arc.ilabel) +
                                tok->tot_cost;
+        if (state != arc.nextstate) {
+          new_weight += config_.length_penalty;
+        }
         if (new_weight + adaptive_beam < next_cutoff)
           next_cutoff = new_weight + adaptive_beam;
       }
@@ -816,7 +821,11 @@ BaseFloat LatticeFasterDecoderTpl<FST, Token>::ProcessEmitting(
         if (arc.ilabel != 0) {  // propagate..
           BaseFloat ac_cost = cost_offset -
                               decodable->LogLikelihood(frame, arc.ilabel),
-                    graph_cost = arc.weight.Value(), cur_cost = tok->tot_cost,
+                    graph_cost = arc.weight.Value();
+          if (state != arc.nextstate) {
+            graph_cost += config_.length_penalty;
+          }
+          BaseFloat cur_cost = tok->tot_cost,
                     tot_cost = cur_cost + ac_cost + graph_cost;
           if (tot_cost >= next_cutoff)
             continue;

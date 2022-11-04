@@ -1,5 +1,17 @@
-// Copyright 2021 Mobvoi Inc. All Rights Reserved.
-// Author: zhendong.peng@mobvoi.com (Zhendong Peng)
+// Copyright (c) 2021 Mobvoi Inc (Zhendong Peng)
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 #include "decoder/context_graph.h"
 
@@ -21,7 +33,7 @@ void ContextGraph::BuildContextGraph(
   end_tag_id_ = symbol_table->AddSymbol("</context>");
   symbol_table_ = symbol_table;
   if (query_contexts.empty()) {
-    graph_.reset();
+    if (graph_ != nullptr) graph_.reset();
     return;
   }
 
@@ -53,7 +65,8 @@ void ContextGraph::BuildContextGraph(
     float escape_score = 0;
     for (size_t i = 0; i < words.size(); ++i) {
       int word_id = symbol_table_->Find(words[i]);
-      float score = config_.context_score * UTF8StringLength(words[i]);
+      float score = (i * config_.incremental_context_score
+                     + config_.context_score) * UTF8StringLength(words[i]);
       next_state = (i < words.size() - 1) ? ofst->AddState() : start_state;
       ofst->AddArc(prev_state,
                    fst::StdArc(word_id, word_id, score, next_state));

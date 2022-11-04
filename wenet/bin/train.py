@@ -27,12 +27,13 @@ from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 
 from wenet.dataset.dataset import Dataset
-from wenet.transformer.asr_model import init_asr_model
-from wenet.utils.checkpoint import load_checkpoint, save_checkpoint
+from wenet.utils.checkpoint import (load_checkpoint, save_checkpoint,
+                                    load_trained_modules)
 from wenet.utils.executor import Executor
-from wenet.utils.file_utils import read_symbol_table
-from wenet.utils.scheduler import WarmupLR
+from wenet.utils.file_utils import read_symbol_table, read_non_lang_symbols
+from wenet.utils.scheduler import WarmupLR, NoamHoldAnnealing
 from wenet.utils.config import override_config
+from wenet.utils.init_model import init_model
 
 def get_args():
     parser = argparse.ArgumentParser(description='training your network')
@@ -84,10 +85,16 @@ def get_args():
                         action='store_true',
                         default=False,
                         help='Use automatic mixed precision training')
+    parser.add_argument('--fp16_grad_sync',
+                        action='store_true',
+                        default=False,
+                        help='Use fp16 gradient sync for ddp')
     parser.add_argument('--cmvn', default=None, help='global cmvn file')
     parser.add_argument('--symbol_table',
                         required=True,
                         help='model unit symbol table for training')
+    parser.add_argument("--non_lang_syms",
+                        help="non-linguistic symbol file. One symbol per line.")
     parser.add_argument('--prefetch',
                         default=100,
                         type=int,
@@ -100,6 +107,16 @@ def get_args():
                         action='append',
                         default=[],
                         help="override yaml config")
+    parser.add_argument("--enc_init",
+                        default=None,
+                        type=str,
+                        help="Pre-trained model to initialize encoder")
+    parser.add_argument("--enc_init_mods",
+                        default="encoder.",
+                        type=lambda s: [str(mod) for mod in s.split(",") if s != ""],
+                        help="List of encoder modules \
+                        to initialize ,separated by a comma")
+
 
     args = parser.parse_args()
     return args
@@ -132,14 +149,18 @@ def main():
     cv_conf = copy.deepcopy(train_conf)
     cv_conf['speed_perturb'] = False
     cv_conf['spec_aug'] = False
+    cv_conf['spec_sub'] = False
+    cv_conf['shuffle'] = False
+    non_lang_syms = read_non_lang_symbols(args.non_lang_syms)
 
     train_dataset = Dataset(args.data_type, args.train_data, symbol_table,
-                            train_conf, args.bpe_model, partition=True)
+                            train_conf, args.bpe_model, non_lang_syms, True)
     cv_dataset = Dataset(args.data_type,
                          args.cv_data,
                          symbol_table,
                          cv_conf,
                          args.bpe_model,
+                         non_lang_syms,
                          partition=False)
 
     train_data_loader = DataLoader(train_dataset,
@@ -153,7 +174,10 @@ def main():
                                 num_workers=args.num_workers,
                                 prefetch_factor=args.prefetch)
 
-    input_dim = configs['dataset_conf']['fbank_conf']['num_mel_bins']
+    if 'fbank_conf' in configs['dataset_conf']:
+        input_dim = configs['dataset_conf']['fbank_conf']['num_mel_bins']
+    else:
+        input_dim = configs['dataset_conf']['mfcc_conf']['num_mel_bins']
     vocab_size = len(symbol_table)
 
     # Save configs to model_dir/train.yaml for inference and export
@@ -168,10 +192,10 @@ def main():
             fout.write(data)
 
     # Init asr model from configs
-    model = init_asr_model(configs)
+    model = init_model(configs)
     print(model)
     num_params = sum(p.numel() for p in model.parameters())
-    print('the number of model params: {}'.format(num_params))
+    print('the number of model params: {:,d}'.format(num_params))
 
     # !!!IMPORTANT!!!
     # Try to export the model by script, if fails, we should refine
@@ -183,6 +207,9 @@ def main():
     # If specify checkpoint, load some info from checkpoint
     if args.checkpoint is not None:
         infos = load_checkpoint(model, args.checkpoint)
+    elif args.enc_init is not None:
+        logging.info('load pretrained encoders: {}'.format(args.enc_init))
+        infos = load_trained_modules(model, args)
     else:
         infos = {}
     start_epoch = infos.get('epoch', -1) + 1
@@ -204,13 +231,31 @@ def main():
         model = torch.nn.parallel.DistributedDataParallel(
             model, find_unused_parameters=True)
         device = torch.device("cuda")
+        if args.fp16_grad_sync:
+            from torch.distributed.algorithms.ddp_comm_hooks import (
+                default as comm_hooks,
+            )
+            model.register_comm_hook(
+                state=None, hook=comm_hooks.fp16_compress_hook
+            )
     else:
         use_cuda = args.gpu >= 0 and torch.cuda.is_available()
         device = torch.device('cuda' if use_cuda else 'cpu')
         model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), **configs['optim_conf'])
-    scheduler = WarmupLR(optimizer, **configs['scheduler_conf'])
+    if configs['optim'] == 'adam':
+        optimizer = optim.Adam(model.parameters(), **configs['optim_conf'])
+    elif configs['optim'] == 'adamw':
+        optimizer = optim.AdamW(model.parameters(), **configs['optim_conf'])
+    else:
+        raise ValueError("unknown optimizer: " + configs['optim'])
+    if configs['scheduler'] == 'warmuplr':
+        scheduler = WarmupLR(optimizer, **configs['scheduler_conf'])
+    elif configs['scheduler'] == 'NoamHoldAnnealing':
+        scheduler = NoamHoldAnnealing(optimizer, **configs['scheduler_conf'])
+    else:
+        raise ValueError("unknown scheduler: " + configs['scheduler'])
+
     final_epoch = None
     configs['rank'] = args.rank
     configs['is_distributed'] = distributed
@@ -254,6 +299,7 @@ def main():
 
     if final_epoch is not None and args.rank == 0:
         final_model_path = os.path.join(model_dir, 'final.pt')
+        os.remove(final_model_path) if os.path.exists(final_model_path) else None
         os.symlink('{}.pt'.format(final_epoch), final_model_path)
         writer.close()
 
