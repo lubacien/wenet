@@ -38,6 +38,7 @@ from wenet.utils.init_model import init_model
 def get_args():
     parser = argparse.ArgumentParser(description='training your network')
     parser.add_argument('--config', required=True, help='config file')
+    parser.add_argument('--temperature_scaling', action='store_true', help='run temperature scaling')
     parser.add_argument('--data_type',
                         default='raw',
                         choices=['raw', 'shard'],
@@ -194,6 +195,12 @@ def main():
     # Init asr model from configs
     model = init_model(configs)
     print(model)
+    if args.temperature_scaling :
+        for param in model.parameters():
+            param.requires_grad = False
+        model.ctc.temperature.requires_grad = True
+    else :
+        model.ctc.temperature.requires_grad = False
     num_params = sum(p.numel() for p in model.parameters())
     print('the number of model params: {:,d}'.format(num_params))
 
@@ -279,22 +286,34 @@ def main():
         logging.info('Epoch {} TRAIN info lr {}'.format(epoch, lr))
         executor.train(model, optimizer, scheduler, train_data_loader, device,
                        writer, configs, scaler)
-        total_loss, num_seen_utts = executor.cv(model, cv_data_loader, device,
-                                                configs)
-        cv_loss = total_loss / num_seen_utts
-
-        logging.info('Epoch {} CV info cv_loss {}'.format(epoch, cv_loss))
-        if args.rank == 0:
-            save_model_path = os.path.join(model_dir, '{}.pt'.format(epoch))
-            save_checkpoint(
-                model, save_model_path, {
-                    'epoch': epoch,
-                    'lr': lr,
-                    'cv_loss': cv_loss,
-                    'step': executor.step
-                })
-            writer.add_scalar('epoch/cv_loss', cv_loss, epoch)
+        if args.temperature_scaling :
+            logging.info("Temperature " + str(model.ctc.temperature))
+            if args.rank == 0:
+                save_model_path = os.path.join(model_dir, '{}.pt'.format(epoch))
+                save_checkpoint(
+                    model, save_model_path, {
+                        'epoch': epoch,
+                        'lr': lr,
+                        'step': executor.step
+                    })
             writer.add_scalar('epoch/lr', lr, epoch)
+        else :
+            total_loss, num_seen_utts = executor.cv(model, cv_data_loader, device,
+                                                    configs)
+            cv_loss = total_loss / num_seen_utts
+
+            logging.info('Epoch {} CV info cv_loss {}'.format(epoch, cv_loss))
+            if args.rank == 0:
+                save_model_path = os.path.join(model_dir, '{}.pt'.format(epoch))
+                save_checkpoint(
+                    model, save_model_path, {
+                        'epoch': epoch,
+                        'lr': lr,
+                        'cv_loss': cv_loss,
+                        'step': executor.step
+                    })
+                writer.add_scalar('epoch/cv_loss', cv_loss, epoch)
+                writer.add_scalar('epoch/lr', lr, epoch)
         final_epoch = epoch
 
     if final_epoch is not None and args.rank == 0:
@@ -302,6 +321,8 @@ def main():
         os.remove(final_model_path) if os.path.exists(final_model_path) else None
         os.symlink('{}.pt'.format(final_epoch), final_model_path)
         writer.close()
+        if args.temperature_scaling :
+            print("final temperature: " + str(model.ctc.temperature))
 
 
 if __name__ == '__main__':

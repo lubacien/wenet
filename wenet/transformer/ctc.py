@@ -42,6 +42,7 @@ class CTC(torch.nn.Module):
 
         reduction_type = "sum" if reduce else "none"
         self.ctc_loss = torch.nn.CTCLoss(reduction=reduction_type)
+        self.temperature = torch.nn.Parameter(torch.ones(1))
 
     def forward(self, hs_pad: torch.Tensor, hlens: torch.Tensor,
                 ys_pad: torch.Tensor, ys_lens: torch.Tensor) -> torch.Tensor:
@@ -55,6 +56,7 @@ class CTC(torch.nn.Module):
         """
         # hs_pad: (B, L, NProj) -> ys_hat: (B, L, Nvocab)
         ys_hat = self.ctc_lo(F.dropout(hs_pad, p=self.dropout_rate))
+        ys_hat = ys_hat / self.temperature
         # ys_hat: (B, L, D) -> (L, B, D)
         ys_hat = ys_hat.transpose(0, 1)
         ys_hat = ys_hat.log_softmax(2)
