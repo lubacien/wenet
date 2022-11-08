@@ -7,8 +7,8 @@
 # Use this to control how many gpu you use, It's 1-gpu training if you specify
 # just 1gpu, otherwise it's is multiple gpu training based on DDP in pytorch
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
-stage=6 # start from 0 if you need to start from data preparation
-stop_stage=6
+stage=5 # start from 0 if you need to start from data preparation
+stop_stage=5
 # data
 data_url=www.openslr.org/resources/12
 # use your own data path
@@ -17,19 +17,20 @@ datadir=datadir
 wave_data=data
 # Optional train_config
 # 1. conf/train_transformer_large.yaml: Standard transformer
-train_config=conf/train_conformer.yaml
-checkpoint=
+#train_config=conf/train_conformer.yaml
+train_config=conf/train_conformer_bidecoder_large.yaml
+
 cmvn=true
 do_delta=false
 
 dir=../../../../20210610_conformer_exp/
-
+checkpoint=$dir/final.pt_noTS
 # use average_checkpoint will get better result
 average_checkpoint=false
 decode_checkpoint=$dir/final.pt
 # maybe you can try to adjust it if you can not get close results as README.md
 average_num=10
-decode_modes="attention_rescoring ctc_greedy_search ctc_prefix_beam_search attention"
+decode_modes="attention_rescoring"
 
 . tools/parse_options.sh || exit 1;
 
@@ -88,7 +89,8 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
 fi
 
 
-dict=$wave_data/lang_char/${train_set}_${bpemode}${nbpe}_units.txt
+#dict=$wave_data/lang_char/${train_set}_${bpemode}${nbpe}_units.txt
+dict=../../../../20210610_conformer_exp/words.txt
 bpemodel=$wave_data/lang_char/${train_set}_${bpemode}${nbpe}
 echo "dictionary: ${dict}"
 if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
@@ -161,9 +163,13 @@ fi
 #In this optional step, we make a temperature scaling: the model's temperature is tuned on the development set
 if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
   gpu_id=$(echo $CUDA_VISIBLE_DEVICES | cut -d',' -f1)
+  INIT_FILE=$dir/ddp_init
+  init_method=file://$(readlink -f $INIT_FILE)
+  dist_backend="gloo"
+  cmvn_opts=$cmvn && cmvn_opts="--cmvn $wave_data/${train_set}/global_cmvn"
   python wenet/bin/train.py --temperature_scaling \
       --gpu $gpu_id \
-      --config $temperature_config \
+      --config $train_config \
       --data_type raw \
       --symbol_table $dict \
       --bpe_model ${bpemodel}.model \
@@ -172,8 +178,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
       ${checkpoint:+--checkpoint $checkpoint} \
       --model_dir $dir \
       --ddp.init_method $init_method \
-      --ddp.world_size $num_gpus \
-      --ddp.rank $i \
+      --ddp.rank 0 \
       --ddp.dist_backend $dist_backend \
       --num_workers 1 \
       $cmvn_opts \
