@@ -18,13 +18,13 @@ wave_data=data
 # Optional train_config
 # 1. conf/train_transformer_large.yaml: Standard transformer
 #train_config=conf/train_conformer.yaml
-train_config=conf/train_conformer_bidecoder_large.yaml
+train_config=../../../../20210610_u2pp_conformer_exp/train.yaml
 
 cmvn=true
 do_delta=false
 
-dir=../../../../20210610_conformer_exp/
-checkpoint=$dir/final.pt_noTS
+dir=../../../../20210610_u2pp_conformer_exp/
+checkpoint=$dir/final_noTS.pt
 # use average_checkpoint will get better result
 average_checkpoint=false
 decode_checkpoint=$dir/final.pt
@@ -90,7 +90,7 @@ fi
 
 
 #dict=$wave_data/lang_char/${train_set}_${bpemode}${nbpe}_units.txt
-dict=../../../../20210610_conformer_exp/words.txt
+dict=../../../../20210610_u2pp_conformer_exp/units.txt
 bpemodel=$wave_data/lang_char/${train_set}_${bpemode}${nbpe}
 echo "dictionary: ${dict}"
 if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
